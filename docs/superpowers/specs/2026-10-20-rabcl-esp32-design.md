@@ -33,7 +33,9 @@ rabcl_esp32   ESP-IDF のドライバを包む。CanBus / SerialPort / PwmOut / 
 
 - STM32 向けの同等層（beta_main は現状維持）
 - ESP32 以外への移植性（Arduino フレームワーク対応を含む）
-- ホスト PC でのユニットテスト（実機でのテストを基本にする。CI はビルドが通ることだけ確認）
+- 実機を使うテストの自動化（実機の確認は `examples/` を焼いて手動で行う）
+
+ホスト PC でのユニットテストは行う（2026-10-22 に追加）: ESP-IDF と FreeRTOS の API を `test/fakes/` の偽物に差し替え、各クラスの論理（引数の検査、状態遷移、カウンタ、キュー、自動回復）を gtest で検証する。CI でも実行する
 
 やってはいけないこと:
 
@@ -143,7 +145,8 @@ gamma_turret_fw/
 
 ### 4.5 テストと CI
 
-- rabcl_esp32 の CI は GitHub Actions（ubuntu）で pioarduino 版 PlatformIO Core を pip で入れ、`examples/` の各プロジェクトを `pio run` する。実機テストは手動
+- ユニットテスト: `test/` に gtest で置く。`test/fakes/` に ESP-IDF / FreeRTOS の偽ヘッダ（`esp_twai.h`、`driver/gpio.h`、`freertos/queue.h` など）を置き、インクルードパスの先頭にしてライブラリ本体をそのままビルドする。偽物は呼び出しを記録し、テストから ISR コールバックを起こせる。ローカルは Docker（`rabbits/ros2-jazzy-dev`）か Linux で `cmake -S test -B build && cmake --build build && ctest --test-dir build`
+- rabcl_esp32 の CI は GitHub Actions（ubuntu）で、ユニットテストの実行と、pioarduino 版 PlatformIO Core を pip で入れて `examples/` を `pio run` する 2 ジョブ。実機テストは手動
 - gamma_turret_fw の CI も同じ形（別途）
 - ローカルでの example の書き込みも PlatformIO で行う（`idf.py` は使わない）
 

@@ -1,10 +1,9 @@
 # rabcl_esp32
+[![CI](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml)
 
 Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / GPIO、今後 UART / LEDC）を包んで、各 ESP32 ファームウェアから同じ形で使えるようにする ESP-IDF コンポーネント。
 
 [rabcl](https://github.com/rabbits-robotics/rabcl)（プロトコルと制御、プラットフォーム非依存）とは独立で、rabcl が作る CAN ペイロード（`uint8_t[8]`）をそのまま `CanBus::Send` に渡せる。
-
-[![CI](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml)
 
 ## 置くもの
 
@@ -60,9 +59,25 @@ while (can.Receive(f, 0)) { /* ... */ }
 - ESP-IDF 5.5.5（PlatformIO + [pioarduino](https://github.com/pioarduino/platform-espressif32) 55.03.312、framework = espidf）
 - 動作確認は ESP32-P4（M5Stack Stamp-P4 v1.3、gamma_turret_pcb）で行っている
 
-## 動作確認
+## テスト
 
-`examples/can_loop` は CAN1 と CAN2 を直結して互いに送受信する試験。`examples/can_loop` で `pio run -t upload` して書き込む。
+rabcl 系のリポジトリはユニットテストを必ず書き、CI で実行する（handbook の [common-lib.md](https://github.com/rabbits-robotics/.github/blob/main/docs/common-lib.md)）。新しいクラスを足すときはテストとセットにする。
+
+### ユニットテスト（実機なし）
+
+`test/` に gtest で置いている。`test/fakes/` にある ESP-IDF / FreeRTOS の偽ヘッダ（`esp_twai.h`、`driver/gpio.h`、`freertos/queue.h` など）をインクルードパスの先頭にして、ライブラリ本体をそのままビルドする。偽物は呼び出しを記録し、テストから ISR コールバック（受信、送信完了、エラー、状態変化）を起こせるので、カウンタやバスオフからの自動回復のような論理を確認できる。
+
+```bash
+cmake -S test -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+Windows では Docker（rabbits_ws の Dev Container イメージ）か WSL で実行する。CI でも同じコマンドを回している。
+
+### 実機での動作確認
+
+`examples/can_loop` は CAN1 と CAN2 を直結して互いに送受信する試験。`examples/can_loop` で `pio run -t upload` して書き込む。本物のドライバと配線を通した確認はこちらで行う。
 
 ## ライセンス
 

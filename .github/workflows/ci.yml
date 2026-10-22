@@ -5,6 +5,20 @@ on:
   pull_request:
 
 jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S test -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   build-examples:
     runs-on: ubuntu-24.04
     steps:
