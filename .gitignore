@@ -6,6 +6,9 @@ examples/*/sdkconfig.*
 examples/*/managed_components/
 examples/*/dependencies.lock
 
+# ユニットテストのビルド
+build/
+
 # エディタ
 .vscode/
 
