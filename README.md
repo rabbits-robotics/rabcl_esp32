@@ -1,7 +1,7 @@
 # rabcl_esp32
 [![CI](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml)
 
-Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / GPIO、今後 UART / LEDC）を包んで、各 ESP32 ファームウェアから同じ形で使えるようにする ESP-IDF コンポーネント。
+Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / GPIO / UART、今後 LEDC）を包んで、各 ESP32 ファームウェアから同じ形で使えるようにする ESP-IDF コンポーネント。
 
 [rabcl](https://github.com/rabbits-robotics/rabcl)（プロトコルと制御、プラットフォーム非依存）とは独立で、rabcl が作る CAN ペイロード（`uint8_t[8]`）をそのまま `CanBus::Send` に渡せる。
 
@@ -20,6 +20,7 @@ Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / 
 |---|---|---|
 | `CanBus` | esp_driver_twai | TWAI コントローラ 1 つ。`Start()` / `Send()` / `Receive()` / `GetCounters()` / `GetStatus()`。`Send()` はフレームを内部のスロットにコピーしてドライバに積んだ時点で戻る（完了は待たない）。受信は ISR からキューに積む。バスオフは既定で FreeRTOS のタイマータスクから自動回復する |
 | `DebugLed` | esp_driver_gpio | LED 1 個。吸い込み / 吐き出しを設定で選ぶ |
+| `SerialPort` | esp_driver_uart | UART 1 ポート（8N1、フロー制御なし）。`Start()` / `Read(buf, len, timeout)` / `Write(buf, len)`。受信はドライバのリングバッファに溜まる。PC との通信（rabcl の `protocol/`）に使う |
 
 共通の決まり:
 
@@ -65,7 +66,7 @@ rabcl 系のリポジトリはユニットテストを必ず書き、CI で実�
 
 ### ユニットテスト（実機なし）
 
-`test/` に gtest で置いている。`test/fakes/` にある ESP-IDF / FreeRTOS の偽ヘッダ（`esp_twai.h`、`driver/gpio.h`、`freertos/queue.h` など）をインクルードパスの先頭にして、ライブラリ本体をそのままビルドする。偽物は呼び出しを記録し、テストから ISR コールバック（受信、送信完了、エラー、状態変化）を起こせるので、カウンタやバスオフからの自動回復のような論理を確認できる。
+`test/` に gtest で置いている。`test/fakes/` にある ESP-IDF / FreeRTOS の偽ヘッダ（`esp_twai.h`、`driver/gpio.h`、`driver/uart.h`、`freertos/queue.h` など）をインクルードパスの先頭にして、ライブラリ本体をそのままビルドする。偽物は呼び出しを記録し、テストから ISR コールバック（受信、送信完了、エラー、状態変化）を起こせるので、カウンタやバスオフからの自動回復のような論理を確認できる。
 
 ```bash
 cmake -S test -B build

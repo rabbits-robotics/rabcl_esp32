@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "esp_twai.h"
 #include "esp_twai_onchip.h"
 #include "freertos/FreeRTOS.h"
@@ -79,6 +80,25 @@ struct GpioRecord
   std::vector<uint32_t> levels;  // gpio_set_level の履歴
 };
 std::map<int, GpioRecord> & gpio();
+
+// UART（ポート番号ごと）
+struct UartRecord
+{
+  bool installed = false;
+  int delete_calls = 0;
+  int rx_buffer_size = 0;
+  int tx_buffer_size = 0;
+  uart_config_t config = {};
+  int tx_pin = UART_PIN_NO_CHANGE;
+  int rx_pin = UART_PIN_NO_CHANGE;
+  int rts_pin = UART_PIN_NO_CHANGE;
+  int cts_pin = UART_PIN_NO_CHANGE;
+  std::vector<uint8_t> written;    // uart_write_bytes で書かれたバイト列（累積）
+  std::deque<uint8_t> rx_pending;  // uart_read_bytes が返すバイト列（テストが仕込む）
+  TickType_t last_read_timeout_ticks = 0;
+};
+std::map<int, UartRecord> & uart();
+esp_err_t & uart_install_result();  // uart_driver_install の戻り値（既定 ESP_OK）
 
 // キュー
 struct FakeQueue

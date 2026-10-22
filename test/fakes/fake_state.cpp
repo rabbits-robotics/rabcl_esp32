@@ -24,6 +24,18 @@ std::map<int, GpioRecord> & gpio()
   return records;
 }
 
+std::map<int, UartRecord> & uart()
+{
+  static std::map<int, UartRecord> records;
+  return records;
+}
+
+esp_err_t & uart_install_result()
+{
+  static esp_err_t result = ESP_OK;
+  return result;
+}
+
 std::vector<std::unique_ptr<FakeQueue>> & queues()
 {
   static std::vector<std::unique_ptr<FakeQueue>> list;
@@ -62,6 +74,8 @@ void Reset()
   twai_nodes().clear();
   twai_new_node_result() = ESP_OK;
   gpio().clear();
+  uart().clear();
+  uart_install_result() = ESP_OK;
   queues().clear();
   pended_calls().clear();
   pend_result() = true;
@@ -232,6 +246,82 @@ esp_err_t gpio_config(const gpio_config_t * cfg)
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level)
 {
   fake_state::gpio()[static_cast<int>(pin)].levels.push_back(level);
+  return ESP_OK;
+}
+
+// --- driver/uart.h ---
+
+esp_err_t uart_driver_install(uart_port_t uart_num, int rx_buffer_size, int tx_buffer_size, int, QueueHandle_t *, int)
+{
+  if (fake_state::uart_install_result() != ESP_OK) {
+    return fake_state::uart_install_result();
+  }
+  auto & u = fake_state::uart()[uart_num];
+  u.installed = true;
+  u.rx_buffer_size = rx_buffer_size;
+  u.tx_buffer_size = tx_buffer_size;
+  return ESP_OK;
+}
+
+esp_err_t uart_driver_delete(uart_port_t uart_num)
+{
+  auto & u = fake_state::uart()[uart_num];
+  u.installed = false;
+  u.delete_calls++;
+  return ESP_OK;
+}
+
+bool uart_is_driver_installed(uart_port_t uart_num)
+{
+  return fake_state::uart()[uart_num].installed;
+}
+
+esp_err_t uart_param_config(uart_port_t uart_num, const uart_config_t * uart_config)
+{
+  fake_state::uart()[uart_num].config = *uart_config;
+  return ESP_OK;
+}
+
+esp_err_t uart_set_pin(uart_port_t uart_num, int tx_io_num, int rx_io_num, int rts_io_num, int cts_io_num)
+{
+  auto & u = fake_state::uart()[uart_num];
+  u.tx_pin = tx_io_num;
+  u.rx_pin = rx_io_num;
+  u.rts_pin = rts_io_num;
+  u.cts_pin = cts_io_num;
+  return ESP_OK;
+}
+
+int uart_write_bytes(uart_port_t uart_num, const void * src, size_t size)
+{
+  auto & u = fake_state::uart()[uart_num];
+  if (!u.installed) {
+    return -1;
+  }
+  const auto * p = static_cast<const uint8_t *>(src);
+  u.written.insert(u.written.end(), p, p + size);
+  return static_cast<int>(size);
+}
+
+int uart_read_bytes(uart_port_t uart_num, void * buf, uint32_t length, TickType_t ticks_to_wait)
+{
+  auto & u = fake_state::uart()[uart_num];
+  if (!u.installed) {
+    return -1;
+  }
+  u.last_read_timeout_ticks = ticks_to_wait;
+  auto * p = static_cast<uint8_t *>(buf);
+  uint32_t n = 0;
+  while (n < length && !u.rx_pending.empty()) {
+    p[n++] = u.rx_pending.front();
+    u.rx_pending.pop_front();
+  }
+  return static_cast<int>(n);
+}
+
+esp_err_t uart_flush_input(uart_port_t uart_num)
+{
+  fake_state::uart()[uart_num].rx_pending.clear();
   return ESP_OK;
 }
 
