@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-examples:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('examples/*/platformio.ini') }}
+
+      - name: Install pioarduino PlatformIO Core
+        run: pip install https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
+
+      - name: Build examples/can_loop
+        run: pio run -d examples/can_loop
