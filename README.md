@@ -4,6 +4,8 @@ Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / 
 
 [rabcl](https://github.com/rabbits-robotics/rabcl)（プロトコルと制御、プラットフォーム非依存）とは独立で、rabcl が作る CAN ペイロード（`uint8_t[8]`）をそのまま `CanBus::Send` に渡せる。
 
+[![CI](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml/badge.svg)](https://github.com/rabbits-robotics/rabcl_esp32/actions/workflows/ci.yml)
+
 ## 置くもの
 
 | 内容 | 置き場 |

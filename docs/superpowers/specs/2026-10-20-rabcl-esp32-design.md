@@ -149,12 +149,15 @@ gamma_turret_fw/
 
 ### 4.6 進め方
 
+実際の順（2026-10-22 実施。クラスはまず gamma_turret_fw 内で切り出して実機確認し、動いたものを移した）:
+
 | 順 | 作業 | 確認 |
 |---|---|---|
-| 1 | rabcl に ESP-IDF 用の CMake 分岐を追加 | rabcl の CI（ROS 2 ビルド）が通ること |
-| 2 | `rabcl_esp32` を作成: `CanBus` と `DebugLed`、`examples/can_loop`（いまの直結試験を移植）、README、LICENSE、CI | example を Stamp-P4 に焼いて、直結試験が前と同じ結果になること。CI が通ること |
-| 3 | gamma_turret_fw に 2 つの submodule を追加し、main.cpp を `board.hpp` + 骨組みの `main.cpp` に書き換える | ビルドが通り、LED が点滅すること |
-| 4 | `SerialPort` / `PwmOut` は Jetson UART と ESC を実装する段階で足す | |
+| 1 | gamma_turret_fw 内で `CanBus` / `DebugLed` / `board.hpp` に切り出す | 直結試験が前と同じ結果。受信キュー溢れ、dlc > 8、Start の二重呼び出し、相手不在（error_passive）と復帰を実機で確認 |
+| 2 | rabcl に ESP-IDF 用の CMake 分岐を追加 | ROS 2 の colcon build / test が通ること |
+| 3 | `rabcl_esp32` を作成してクラスを移す。`examples/can_loop`、README、LICENSE、CI | example を Stamp-P4 に焼いて直結試験が同じ結果。CI が通ること |
+| 4 | gamma_turret_fw に 2 つの submodule を追加し、`board.hpp` + 骨組みの `main.cpp` にする | ビルドが通り、LED が点滅し、rabcl の関数がリンクされること |
+| 5 | `SerialPort` / `PwmOut` は Jetson UART と ESC を実装する段階で足す | |
 
 ## 5. 実装者に任せる範囲
 
