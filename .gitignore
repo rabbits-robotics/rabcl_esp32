@@ -1,0 +1,13 @@
+# PlatformIO（examples/）
+examples/*/.pio/
+examples/*/sdkconfig
+examples/*/sdkconfig.*
+!examples/*/sdkconfig.defaults
+examples/*/managed_components/
+examples/*/dependencies.lock
+
+# エディタ
+.vscode/
+
+# 実装計画の作業ディレクトリ
+.superpowers/
