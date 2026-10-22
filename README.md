@@ -18,7 +18,7 @@ Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / 
 
 | クラス | 包むもの | 役割 |
 |---|---|---|
-| `CanBus` | esp_driver_twai | TWAI コントローラ 1 つ。`Start()` / `Send()` / `Receive()` / `GetCounters()` / `GetStatus()`。受信は ISR からキューに積む。バスオフは既定で自動回復 |
+| `CanBus` | esp_driver_twai | TWAI コントローラ 1 つ。`Start()` / `Send()` / `Receive()` / `GetCounters()` / `GetStatus()`。`Send()` はフレームを内部のスロットにコピーしてドライバに積んだ時点で戻る（完了は待たない）。受信は ISR からキューに積む。バスオフは既定で FreeRTOS のタイマータスクから自動回復する |
 | `DebugLed` | esp_driver_gpio | LED 1 個。吸い込み / 吐き出しを設定で選ぶ |
 
 共通の決まり:
@@ -50,7 +50,7 @@ ESP_ERROR_CHECK(can.Start());
 rabcl_esp32::CanFrame f;
 f.id = 0x101;
 f.dlc = 8;
-can.Send(f, pdMS_TO_TICKS(100));
+can.Send(f, pdMS_TO_TICKS(100));  // 送信スロットが 100 ms 空かなければ ESP_ERR_TIMEOUT
 while (can.Receive(f, 0)) { /* ... */ }
 ```
 
