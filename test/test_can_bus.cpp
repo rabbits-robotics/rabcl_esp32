@@ -94,33 +94,107 @@ TEST_F(CanBusTest, SendRejectsDlcOver8WithoutTouchingDriver)
   CanBus can(TestConfig());
   ASSERT_EQ(ESP_OK, can.Start());
   EXPECT_EQ(ESP_ERR_INVALID_ARG, can.Send(TestFrame(0x101, 9), 10));
-  EXPECT_TRUE(Node()->tx.empty());
+  EXPECT_TRUE(Node()->tx_pending.empty());
 }
 
-TEST_F(CanBusTest, SendPassesIdDlcDataAndWaitsForCompletion)
+TEST_F(CanBusTest, SendPassesIdDlcDataAndTimeoutInMilliseconds)
 {
   CanBus can(TestConfig());
   ASSERT_EQ(ESP_OK, can.Start());
   CanFrame f = TestFrame(0x202, 3);
   f.ext = true;
-  EXPECT_EQ(ESP_OK, can.Send(f, 100));
-  ASSERT_EQ(1u, Node()->tx.size());
-  EXPECT_EQ(0x202u, Node()->tx[0].id);
-  EXPECT_EQ(3u, Node()->tx[0].dlc);
-  EXPECT_TRUE(Node()->tx[0].ide);
-  EXPECT_FALSE(Node()->tx[0].rtr);
-  EXPECT_EQ((std::vector<uint8_t>{0xA0, 0xA1, 0xA2}), Node()->tx[0].data);
-  EXPECT_EQ(100, Node()->tx[0].timeout_ms);
-  EXPECT_EQ(1, Node()->wait_all_done_calls);
+  EXPECT_EQ(ESP_OK, can.Send(f, pdMS_TO_TICKS(100)));
+  ASSERT_EQ(1u, Node()->tx_pending.size());
+  EXPECT_EQ(100, Node()->tx_pending[0].timeout_ms);  // tick → ms に変換して渡す
+  Node()->FireTxDone(true);
+  ASSERT_EQ(1u, Node()->tx_done.size());
+  EXPECT_EQ(0x202u, Node()->tx_done[0].id);
+  EXPECT_EQ(3u, Node()->tx_done[0].dlc);
+  EXPECT_TRUE(Node()->tx_done[0].ide);
+  EXPECT_FALSE(Node()->tx_done[0].rtr);
+  EXPECT_EQ((std::vector<uint8_t>{0xA0, 0xA1, 0xA2}), Node()->tx_done[0].data);
 }
 
-TEST_F(CanBusTest, SendReturnsDriverTransmitError)
+TEST_F(CanBusTest, SendMapsPortMaxDelayToDriverInfiniteTimeout)
 {
   CanBus can(TestConfig());
   ASSERT_EQ(ESP_OK, can.Start());
-  Node()->transmit_result = ESP_ERR_TIMEOUT;
-  EXPECT_EQ(ESP_ERR_TIMEOUT, can.Send(TestFrame(), 10));
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(), portMAX_DELAY));
+  EXPECT_EQ(-1, Node()->tx_pending[0].timeout_ms);
+}
+
+TEST_F(CanBusTest, SendReturnsWithoutWaitingForCompletion)
+{
+  CanBus can(TestConfig());
+  ASSERT_EQ(ESP_OK, can.Start());
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(), 0));
   EXPECT_EQ(0, Node()->wait_all_done_calls);
+}
+
+TEST_F(CanBusTest, QueuedSendsKeepTheirOwnFrameUntilTxDone)
+{
+  // ドライバはフレームをコピーせずポインタを保持するので、Send から戻ったあとも
+  // フレームの実体は CanBus が持ち続け、2 つ目の Send で 1 つ目が上書きされてはいけない
+  CanBus can(TestConfig());
+  ASSERT_EQ(ESP_OK, can.Start());
+  {
+    CanFrame a = TestFrame(0x101, 8);
+    a.data[0] = 0x11;
+    EXPECT_EQ(ESP_OK, can.Send(a, 0));
+  }
+  {
+    CanFrame b = TestFrame(0x102, 8);
+    b.data[0] = 0x22;
+    EXPECT_EQ(ESP_OK, can.Send(b, 0));
+  }
+  ASSERT_EQ(2u, Node()->tx_pending.size());
+  EXPECT_NE(Node()->tx_pending[0].frame, Node()->tx_pending[1].frame);
+  Node()->FireTxDone(true);
+  Node()->FireTxDone(true);
+  ASSERT_EQ(2u, Node()->tx_done.size());
+  EXPECT_EQ(0x101u, Node()->tx_done[0].id);
+  EXPECT_EQ(0x11, Node()->tx_done[0].data[0]);
+  EXPECT_EQ(0x102u, Node()->tx_done[1].id);
+  EXPECT_EQ(0x22, Node()->tx_done[1].data[0]);
+}
+
+TEST_F(CanBusTest, SendTimesOutWhenAllTxSlotsAreInFlight)
+{
+  CanBusConfig cfg = TestConfig();
+  cfg.tx_queue_depth = 2;  // 送信中 1 + キュー 2 = 3 枚まで
+  CanBus can(cfg);
+  ASSERT_EQ(ESP_OK, can.Start());
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x1), 0));
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x2), 0));
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x3), 0));
+  EXPECT_EQ(ESP_ERR_TIMEOUT, can.Send(TestFrame(0x4), 0));
+  Node()->FireTxDone(true);  // 1 枚完了すれば 1 枚送れる
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x4), 0));
+}
+
+TEST_F(CanBusTest, TxSlotIsReleasedOnTxDoneEvenWhenTransmitFailed)
+{
+  CanBusConfig cfg = TestConfig();
+  cfg.tx_queue_depth = 0;  // 送信中の 1 枚だけ
+  CanBus can(cfg);
+  ASSERT_EQ(ESP_OK, can.Start());
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x1), 0));
+  EXPECT_EQ(ESP_ERR_TIMEOUT, can.Send(TestFrame(0x2), 0));
+  Node()->FireTxDone(false);
+  EXPECT_EQ(1u, can.GetCounters().tx_fail);
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(0x2), 0));
+}
+
+TEST_F(CanBusTest, SendReturnsDriverTransmitErrorAndKeepsSlotsAvailable)
+{
+  CanBusConfig cfg = TestConfig();
+  cfg.tx_queue_depth = 0;
+  CanBus can(cfg);
+  ASSERT_EQ(ESP_OK, can.Start());
+  Node()->transmit_result = ESP_ERR_TIMEOUT;
+  EXPECT_EQ(ESP_ERR_TIMEOUT, can.Send(TestFrame(), 0));
+  Node()->transmit_result = ESP_OK;
+  EXPECT_EQ(ESP_OK, can.Send(TestFrame(), 0));  // 失敗したスロットは返されている
 }
 
 TEST_F(CanBusTest, ReceiveReturnsFrameDeliveredByRxCallback)
@@ -170,6 +244,9 @@ TEST_F(CanBusTest, TxDoneFailureCountsTxFail)
 {
   CanBus can(TestConfig());
   ASSERT_EQ(ESP_OK, can.Start());
+  ASSERT_EQ(ESP_OK, can.Send(TestFrame(0x1), 0));
+  ASSERT_EQ(ESP_OK, can.Send(TestFrame(0x2), 0));
+  ASSERT_EQ(ESP_OK, can.Send(TestFrame(0x3), 0));
   Node()->FireTxDone(true);
   Node()->FireTxDone(false);
   Node()->FireTxDone(false);
@@ -185,27 +262,28 @@ TEST_F(CanBusTest, ErrorCallbackCountsBusError)
   EXPECT_EQ(2u, can.GetCounters().bus_error);
 }
 
-TEST_F(CanBusTest, BusOffTriggersRecoverOnNextSendWhenAutoRecover)
+TEST_F(CanBusTest, BusOffRecoversFromTimerTaskWithoutSendOrReceive)
 {
   CanBus can(TestConfig());  // auto_recover は既定で true
   ASSERT_EQ(ESP_OK, can.Start());
   Node()->FireStateChange(TWAI_ERROR_PASSIVE, TWAI_ERROR_BUS_OFF);
   EXPECT_EQ(1u, can.GetCounters().bus_off);
   EXPECT_EQ(0, Node()->recover_calls);  // ISR の中では呼ばない
-  can.Send(TestFrame(), 10);
+  EXPECT_EQ(1, fake_state::RunPendedFunctions());  // タイマータスクに 1 件積まれている
   EXPECT_EQ(1, Node()->recover_calls);
-  can.Send(TestFrame(), 10);
-  EXPECT_EQ(1, Node()->recover_calls);  // 1 回のバスオフにつき 1 回
 }
 
-TEST_F(CanBusTest, BusOffTriggersRecoverOnNextReceiveWhenAutoRecover)
+TEST_F(CanBusTest, BusOffFallsBackToRecoverOnNextSendWhenPendFails)
 {
   CanBus can(TestConfig());
   ASSERT_EQ(ESP_OK, can.Start());
+  fake_state::pend_result() = false;  // タイマーのコマンドキューが一杯
   Node()->FireStateChange(TWAI_ERROR_PASSIVE, TWAI_ERROR_BUS_OFF);
-  CanFrame f;
-  can.Receive(f, 0);
+  EXPECT_EQ(0, Node()->recover_calls);
+  can.Send(TestFrame(), 0);
   EXPECT_EQ(1, Node()->recover_calls);
+  can.Send(TestFrame(), 0);
+  EXPECT_EQ(1, Node()->recover_calls);  // 1 回のバスオフにつき 1 回
 }
 
 TEST_F(CanBusTest, BusOffWithoutAutoRecoverDoesNotRecoverUntilAsked)
@@ -215,7 +293,8 @@ TEST_F(CanBusTest, BusOffWithoutAutoRecoverDoesNotRecoverUntilAsked)
   CanBus can(cfg);
   ASSERT_EQ(ESP_OK, can.Start());
   Node()->FireStateChange(TWAI_ERROR_PASSIVE, TWAI_ERROR_BUS_OFF);
-  can.Send(TestFrame(), 10);
+  EXPECT_EQ(0, fake_state::RunPendedFunctions());
+  can.Send(TestFrame(), 0);
   EXPECT_EQ(0, Node()->recover_calls);
   EXPECT_EQ(ESP_OK, can.Recover());
   EXPECT_EQ(1, Node()->recover_calls);

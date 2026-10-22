@@ -2,6 +2,7 @@
 #define RABCL_ESP32__CAN_BUS_HPP_
 
 #include <cstdint>
+#include <memory>
 
 #include <driver/gpio.h>
 #include <esp_err.h>
@@ -19,18 +20,18 @@ struct CanFrame
   uint8_t data[8] = {};
   bool ext = false;           // 29 bit ID
   bool rtr = false;           // リモートフレーム
-  uint64_t timestamp_us = 0;  // 受信時刻（Start 後の経過時間）
+  uint64_t timestamp_us = 0;  // 受信時刻（起動からの経過時間）
 };
 
 struct CanBusConfig
 {
-  gpio_num_t tx;
-  gpio_num_t rx;
-  uint32_t bitrate;
-  uint32_t tx_queue_depth = 8;
+  gpio_num_t tx = GPIO_NUM_NC;
+  gpio_num_t rx = GPIO_NUM_NC;
+  uint32_t bitrate = 0;
+  uint32_t tx_queue_depth = 8;  // ドライバの送信キュー深さ。送信中の 1 枚を足した数まで Send を積める
   uint32_t rx_queue_depth = 16;
-  int8_t fail_retry_cnt = 3;  // 送信失敗時のハード再送回数（-1 で無限）
-  bool auto_recover = true;   // バスオフになったら次の Send / Receive で自動回復する
+  int8_t fail_retry_cnt = 3;    // 送信失敗時のハード再送回数（-1 で無限）
+  bool auto_recover = true;     // バスオフになったらタイマータスクから自動で回復する
 };
 
 struct CanBusCounters
@@ -42,7 +43,11 @@ struct CanBusCounters
   uint32_t recovered = 0;   // バスオフから error_active に戻った回数
 };
 
-// TWAI コントローラ 1 つ分。受信は ISR からキューに積み、タスク側で Receive() する。
+// TWAI コントローラ 1 つ分。
+// 送信: Send() はフレームを CanBus が持つスロットにコピーしてドライバに積み、積めた時点で戻る
+//       （ドライバはフレームをコピーせずポインタを保持するため、完了まで実体を CanBus が持つ）。
+//       完了・失敗は OnTxDone で受けてスロットを返し、失敗は tx_fail に数える。
+// 受信: ISR からキューに積み、タスク側で Receive() する。
 class CanBus
 {
 public:
@@ -53,7 +58,8 @@ public:
 
   esp_err_t Start();  // 2 回目は ESP_ERR_INVALID_STATE
   esp_err_t Stop();
-  // dlc > 8 は ESP_ERR_INVALID_ARG。送信完了（または失敗）まで待つ
+  // dlc > 8 は ESP_ERR_INVALID_ARG。空きスロットが timeout 内に無ければ ESP_ERR_TIMEOUT。
+  // timeout に portMAX_DELAY を渡すと空くまで待つ
   esp_err_t Send(const CanFrame & frame, TickType_t timeout);
   // キューから 1 フレーム取り出す。timeout 内に無ければ false
   bool Receive(CanFrame & frame, TickType_t timeout);
@@ -62,16 +68,27 @@ public:
   esp_err_t Recover();  // バスオフからの手動回復
 
 private:
+  struct TxSlot
+  {
+    twai_frame_t frame;  // 先頭に置く（done_tx_frame のポインタからスロットを引くため）
+    uint8_t data[8];
+  };
+
   static bool OnRxDone(twai_node_handle_t node, const twai_rx_done_event_data_t * edata, void * ctx);
   static bool OnTxDone(twai_node_handle_t node, const twai_tx_done_event_data_t * edata, void * ctx);
   static bool OnError(twai_node_handle_t node, const twai_error_event_data_t * edata, void * ctx);
   static bool OnStateChange(
     twai_node_handle_t node, const twai_state_change_event_data_t * edata, void * ctx);
+  static void RecoverDeferred(void * arg, uint32_t);  // タイマータスクで実行
+  esp_err_t InitTxSlots();
   void MaybeRecover();
 
   CanBusConfig config_;
   twai_node_handle_t node_ = nullptr;
   QueueHandle_t rx_queue_ = nullptr;
+  std::unique_ptr<TxSlot[]> tx_slots_;
+  uint32_t tx_slot_count_ = 0;
+  QueueHandle_t free_tx_slots_ = nullptr;  // 空きスロットの番号（uint8_t）
   bool started_ = false;
   volatile bool recover_requested_ = false;
   // ISR から更新するカウンタ

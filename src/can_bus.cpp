@@ -4,9 +4,17 @@
 
 #include <esp_attr.h>
 #include <esp_twai_onchip.h>
+#include <freertos/timers.h>
 
 namespace rabcl_esp32
 {
+
+namespace
+{
+
+constexpr uint32_t MAX_TX_SLOTS = 255;  // スロット番号を uint8_t で運ぶため
+
+}  // namespace
 
 CanBus::CanBus(const CanBusConfig & config) : config_(config) {}
 
@@ -19,6 +27,45 @@ CanBus::~CanBus()
     vQueueDelete(rx_queue_);
     rx_queue_ = nullptr;
   }
+  if (free_tx_slots_ != nullptr) {
+    vQueueDelete(free_tx_slots_);
+    free_tx_slots_ = nullptr;
+  }
+}
+
+esp_err_t CanBus::InitTxSlots()
+{
+  // ドライバのキュー（tx_queue_depth）+ 送信中の 1 枚
+  uint32_t count = config_.tx_queue_depth + 1;
+  if (count > MAX_TX_SLOTS) {
+    count = MAX_TX_SLOTS;
+  }
+  if (tx_slots_ == nullptr || tx_slot_count_ != count) {
+    tx_slots_.reset(new (std::nothrow) TxSlot[count]);
+    if (tx_slots_ == nullptr) {
+      return ESP_ERR_NO_MEM;
+    }
+    tx_slot_count_ = count;
+    if (free_tx_slots_ != nullptr) {
+      vQueueDelete(free_tx_slots_);
+      free_tx_slots_ = nullptr;
+    }
+  }
+  if (free_tx_slots_ == nullptr) {
+    free_tx_slots_ = xQueueCreate(tx_slot_count_, sizeof(uint8_t));
+    if (free_tx_slots_ == nullptr) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
+  // Stop() でドライバに残っていたフレームは捨てられるので、空きを全部入れ直す
+  uint8_t dummy;
+  while (xQueueReceive(free_tx_slots_, &dummy, 0) == pdTRUE) {
+  }
+  for (uint32_t i = 0; i < tx_slot_count_; ++i) {
+    const uint8_t idx = static_cast<uint8_t>(i);
+    xQueueSend(free_tx_slots_, &idx, 0);
+  }
+  return ESP_OK;
 }
 
 esp_err_t CanBus::Start()
@@ -32,6 +79,10 @@ esp_err_t CanBus::Start()
       return ESP_ERR_NO_MEM;
     }
   }
+  esp_err_t err = InitTxSlots();
+  if (err != ESP_OK) {
+    return err;
+  }
 
   twai_onchip_node_config_t cfg = {};
   cfg.io_cfg.tx = config_.tx;
@@ -42,7 +93,7 @@ esp_err_t CanBus::Start()
   cfg.fail_retry_cnt = config_.fail_retry_cnt;
   cfg.tx_queue_depth = config_.tx_queue_depth;
   cfg.timestamp_resolution_hz = 1000000;
-  esp_err_t err = twai_new_node_onchip(&cfg, &node_);
+  err = twai_new_node_onchip(&cfg, &node_);
   if (err != ESP_OK) {
     return err;
   }
@@ -64,6 +115,7 @@ esp_err_t CanBus::Start()
     node_ = nullptr;
     return err;
   }
+  recover_requested_ = false;
   started_ = true;
   return ESP_OK;
 }
@@ -90,23 +142,27 @@ esp_err_t CanBus::Send(const CanFrame & frame, TickType_t timeout)
   }
   MaybeRecover();
 
-  uint8_t buf[8];
-  std::memcpy(buf, frame.data, sizeof(buf));
-  twai_frame_t tx = {};
-  tx.header.id = frame.id;
-  tx.header.dlc = frame.dlc;
-  tx.header.ide = frame.ext ? 1 : 0;
-  tx.header.rtr = frame.rtr ? 1 : 0;
-  tx.buffer = buf;
-  tx.buffer_len = frame.dlc;
+  uint8_t idx = 0;
+  if (xQueueReceive(free_tx_slots_, &idx, timeout) != pdTRUE) {
+    return ESP_ERR_TIMEOUT;
+  }
+  TxSlot & slot = tx_slots_[idx];
+  std::memcpy(slot.data, frame.data, sizeof(slot.data));
+  slot.frame = {};
+  slot.frame.header.id = frame.id;
+  slot.frame.header.dlc = frame.dlc;
+  slot.frame.header.ide = frame.ext ? 1 : 0;
+  slot.frame.header.rtr = frame.rtr ? 1 : 0;
+  slot.frame.buffer = slot.data;
+  slot.frame.buffer_len = frame.dlc;
 
-  const int timeout_ms = static_cast<int>(pdTICKS_TO_MS(timeout));
-  esp_err_t err = twai_node_transmit(node_, &tx, timeout_ms);
+  const int timeout_ms = (timeout == portMAX_DELAY) ? -1 : static_cast<int>(pdTICKS_TO_MS(timeout));
+  esp_err_t err = twai_node_transmit(node_, &slot.frame, timeout_ms);
   if (err != ESP_OK) {
+    xQueueSend(free_tx_slots_, &idx, 0);  // 積めなかったスロットは返す
     return err;
   }
-  // buf はスタック上なので、送信が終わるまでここで待つ
-  return twai_node_transmit_wait_all_done(node_, timeout_ms);
+  return ESP_OK;
 }
 
 bool CanBus::Receive(CanFrame & frame, TickType_t timeout)
@@ -153,6 +209,12 @@ void CanBus::MaybeRecover()
   }
 }
 
+void CanBus::RecoverDeferred(void * arg, uint32_t)
+{
+  auto * self = static_cast<CanBus *>(arg);
+  self->Recover();
+}
+
 // --- ISR コールバック。ブロックする API とログは使わない ---
 
 bool IRAM_ATTR CanBus::OnRxDone(twai_node_handle_t node, const twai_rx_done_event_data_t *, void * ctx)
@@ -183,7 +245,15 @@ bool IRAM_ATTR CanBus::OnTxDone(twai_node_handle_t, const twai_tx_done_event_dat
   if (!edata->is_tx_success) {
     self->tx_fail_ = self->tx_fail_ + 1;
   }
-  return false;
+  // frame は TxSlot の先頭メンバなので、ポインタからスロット番号が引ける
+  const auto * slot = reinterpret_cast<const TxSlot *>(edata->done_tx_frame);
+  const TxSlot * base = self->tx_slots_.get();
+  BaseType_t woken = pdFALSE;
+  if (slot >= base && slot < base + self->tx_slot_count_) {
+    const uint8_t idx = static_cast<uint8_t>(slot - base);
+    xQueueSendFromISR(self->free_tx_slots_, &idx, &woken);
+  }
+  return woken == pdTRUE;
 }
 
 bool IRAM_ATTR CanBus::OnError(twai_node_handle_t, const twai_error_event_data_t *, void * ctx)
@@ -197,15 +267,20 @@ bool IRAM_ATTR CanBus::OnStateChange(
   twai_node_handle_t, const twai_state_change_event_data_t * edata, void * ctx)
 {
   auto * self = static_cast<CanBus *>(ctx);
+  BaseType_t woken = pdFALSE;
   if (edata->new_sta == TWAI_ERROR_BUS_OFF) {
     self->bus_off_ = self->bus_off_ + 1;
     if (self->config_.auto_recover) {
-      self->recover_requested_ = true;
+      // ISR からはドライバを呼べないので、タイマータスクに回復を頼む。
+      // タイマーのコマンドキューが一杯なら、次の Send / Receive で回復する
+      if (xTimerPendFunctionCallFromISR(RecoverDeferred, self, 0, &woken) != pdPASS) {
+        self->recover_requested_ = true;
+      }
     }
   } else if (edata->old_sta == TWAI_ERROR_BUS_OFF && edata->new_sta == TWAI_ERROR_ACTIVE) {
     self->recovered_ = self->recovered_ + 1;
   }
-  return false;
+  return woken == pdTRUE;
 }
 
 }  // namespace rabcl_esp32

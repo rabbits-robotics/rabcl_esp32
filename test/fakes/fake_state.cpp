@@ -3,9 +3,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-
 namespace fake_state
 {
 
@@ -33,6 +30,30 @@ std::vector<std::unique_ptr<FakeQueue>> & queues()
   return list;
 }
 
+std::deque<PendedCall> & pended_calls()
+{
+  static std::deque<PendedCall> calls;
+  return calls;
+}
+
+bool & pend_result()
+{
+  static bool result = true;
+  return result;
+}
+
+int RunPendedFunctions()
+{
+  int n = 0;
+  while (!pended_calls().empty()) {
+    PendedCall c = pended_calls().front();
+    pended_calls().pop_front();
+    c.function(c.arg1, c.arg2);
+    ++n;
+  }
+  return n;
+}
+
 void Reset()
 {
   for (auto * n : twai_nodes()) {
@@ -42,6 +63,8 @@ void Reset()
   twai_new_node_result() = ESP_OK;
   gpio().clear();
   queues().clear();
+  pended_calls().clear();
+  pend_result() = true;
 }
 
 }  // namespace fake_state
@@ -59,11 +82,22 @@ void twai_node_t::FireRx(const RxFrame & frame)
 
 void twai_node_t::FireTxDone(bool success)
 {
+  if (tx_pending.empty()) {
+    return;
+  }
+  TxRecord rec = tx_pending.front();
+  tx_pending.pop_front();
+  // 本物のドライバはこの時点までフレームのポインタ越しに内容を読む
+  rec.id = rec.frame->header.id;
+  rec.dlc = rec.frame->header.dlc;
+  rec.ide = rec.frame->header.ide != 0;
+  rec.rtr = rec.frame->header.rtr != 0;
+  rec.data.assign(rec.frame->buffer, rec.frame->buffer + rec.frame->buffer_len);
+  tx_done.push_back(rec);
   if (callbacks.on_tx_done != nullptr) {
-    twai_frame_t frame = {};
     twai_tx_done_event_data_t edata = {};
     edata.is_tx_success = success;
-    edata.done_tx_frame = &frame;
+    edata.done_tx_frame = rec.frame;
     callbacks.on_tx_done(this, &edata, user_ctx);
   }
 }
@@ -138,14 +172,14 @@ esp_err_t twai_node_transmit(twai_node_handle_t node, const twai_frame_t * frame
   if (node->transmit_result != ESP_OK) {
     return node->transmit_result;
   }
-  twai_node_t::TxRecord rec;
-  rec.id = frame->header.id;
-  rec.dlc = frame->header.dlc;
-  rec.ide = frame->header.ide != 0;
-  rec.rtr = frame->header.rtr != 0;
-  rec.data.assign(frame->buffer, frame->buffer + frame->buffer_len);
+  // 本物と同じく、ハードのキュー（tx_queue_depth）+ 送信中 1 つまでしか受け付けない
+  if (node->tx_pending.size() >= node->config.tx_queue_depth + 1) {
+    return ESP_ERR_TIMEOUT;
+  }
+  twai_node_t::TxRecord rec = {};
+  rec.frame = frame;
   rec.timeout_ms = timeout_ms;
-  node->tx.push_back(rec);
+  node->tx_pending.push_back(rec);
   return ESP_OK;
 }
 
@@ -217,18 +251,33 @@ void vQueueDelete(QueueHandle_t)
   // Reset() でまとめて解放する
 }
 
-BaseType_t xQueueSendFromISR(QueueHandle_t queue, const void * item, BaseType_t * higher_priority_task_woken)
+namespace
+{
+
+BaseType_t Push(QueueHandle_t queue, const void * item)
 {
   auto * q = static_cast<fake_state::FakeQueue *>(queue);
-  if (higher_priority_task_woken != nullptr) {
-    *higher_priority_task_woken = pdFALSE;
-  }
   if (q->items.size() >= q->length) {
     return pdFALSE;
   }
   const auto * bytes = static_cast<const uint8_t *>(item);
   q->items.emplace_back(bytes, bytes + q->item_size);
   return pdTRUE;
+}
+
+}  // namespace
+
+BaseType_t xQueueSend(QueueHandle_t queue, const void * item, TickType_t)
+{
+  return Push(queue, item);
+}
+
+BaseType_t xQueueSendFromISR(QueueHandle_t queue, const void * item, BaseType_t * higher_priority_task_woken)
+{
+  if (higher_priority_task_woken != nullptr) {
+    *higher_priority_task_woken = pdFALSE;
+  }
+  return Push(queue, item);
 }
 
 BaseType_t xQueueReceive(QueueHandle_t queue, void * buffer, TickType_t)
@@ -240,4 +289,24 @@ BaseType_t xQueueReceive(QueueHandle_t queue, void * buffer, TickType_t)
   std::memcpy(buffer, q->items.front().data(), q->item_size);
   q->items.pop_front();
   return pdTRUE;
+}
+
+UBaseType_t uxQueueMessagesWaiting(QueueHandle_t queue)
+{
+  return static_cast<UBaseType_t>(static_cast<fake_state::FakeQueue *>(queue)->items.size());
+}
+
+// --- freertos/timers.h ---
+
+BaseType_t xTimerPendFunctionCallFromISR(
+  PendedFunction_t function, void * arg1, uint32_t arg2, BaseType_t * higher_priority_task_woken)
+{
+  if (higher_priority_task_woken != nullptr) {
+    *higher_priority_task_woken = pdFALSE;
+  }
+  if (!fake_state::pend_result()) {
+    return pdFAIL;
+  }
+  fake_state::pended_calls().push_back({function, arg1, arg2});
+  return pdPASS;
 }

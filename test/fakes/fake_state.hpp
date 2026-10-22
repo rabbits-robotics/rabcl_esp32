@@ -13,6 +13,7 @@
 #include "esp_twai_onchip.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/timers.h"
 
 // twai_node_handle_t の実体
 struct twai_node_t
@@ -28,16 +29,21 @@ struct twai_node_t
   twai_node_status_t status = {};
   twai_node_record_t record = {};
 
+  // 本物のドライバと同じく、transmit はフレームをコピーせずポインタを保持する。
+  // 送信完了（FireTxDone）の時点でポインタ越しに読んだ内容を記録する
   struct TxRecord
   {
+    const twai_frame_t * frame;  // transmit に渡されたポインタ
+    int timeout_ms;
+    // FireTxDone の時点で読んだ内容
     uint32_t id;
     uint16_t dlc;
     bool ide;
     bool rtr;
     std::vector<uint8_t> data;
-    int timeout_ms;
   };
-  std::vector<TxRecord> tx;
+  std::deque<TxRecord> tx_pending;  // transmit 済みでまだ完了していない順
+  std::vector<TxRecord> tx_done;    // FireTxDone で完了した順
 
   struct RxFrame
   {
@@ -51,10 +57,10 @@ struct twai_node_t
   std::deque<RxFrame> rx_pending;  // receive_from_isr が返すフレーム
 
   // --- テストからコールバックを起こす ---
-  void FireRx(const RxFrame & frame);                                   // on_rx_done（受信フレームを 1 つ積んでから呼ぶ）
-  void FireTxDone(bool success);                                        // on_tx_done
-  void FireError(uint32_t flags);                                       // on_error
-  void FireStateChange(twai_error_state_t from, twai_error_state_t to); // on_state_change
+  void FireRx(const RxFrame & frame);                                    // on_rx_done（受信フレームを 1 つ積んでから呼ぶ）
+  void FireTxDone(bool success);                                         // on_tx_done（tx_pending の先頭を完了にする）
+  void FireError(uint32_t flags);                                        // on_error
+  void FireStateChange(twai_error_state_t from, twai_error_state_t to);  // on_state_change
 };
 
 namespace fake_state
@@ -82,6 +88,17 @@ struct FakeQueue
   std::deque<std::vector<uint8_t>> items;
 };
 std::vector<std::unique_ptr<FakeQueue>> & queues();
+
+// タイマータスクへの遅延呼び出し（xTimerPendFunctionCallFromISR）
+struct PendedCall
+{
+  PendedFunction_t function;
+  void * arg1;
+  uint32_t arg2;
+};
+std::deque<PendedCall> & pended_calls();
+int RunPendedFunctions();  // 積まれた関数を順に実行し、実行した数を返す
+bool & pend_result();      // xTimerPendFunctionCallFromISR の戻り値（既定 true = pdPASS）
 
 }  // namespace fake_state
 
