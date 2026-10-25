@@ -43,5 +43,6 @@ esp_err_t uart_set_pin(uart_port_t uart_num, int tx_io_num, int rx_io_num, int r
 int uart_write_bytes(uart_port_t uart_num, const void * src, size_t size);
 int uart_read_bytes(uart_port_t uart_num, void * buf, uint32_t length, TickType_t ticks_to_wait);
 esp_err_t uart_flush_input(uart_port_t uart_num);
+esp_err_t uart_wait_tx_done(uart_port_t uart_num, TickType_t ticks_to_wait);
 
 #endif  // FAKES__DRIVER__UART_H_

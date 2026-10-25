@@ -300,6 +300,8 @@ int uart_write_bytes(uart_port_t uart_num, const void * src, size_t size)
   }
   const auto * p = static_cast<const uint8_t *>(src);
   u.written.insert(u.written.end(), p, p + size);
+  u.rx_pending.insert(u.rx_pending.end(), u.rx_after_write.begin(), u.rx_after_write.end());
+  u.rx_after_write.clear();
   return static_cast<int>(size);
 }
 
@@ -321,7 +323,15 @@ int uart_read_bytes(uart_port_t uart_num, void * buf, uint32_t length, TickType_
 
 esp_err_t uart_flush_input(uart_port_t uart_num)
 {
-  fake_state::uart()[uart_num].rx_pending.clear();
+  auto & u = fake_state::uart()[uart_num];
+  u.rx_pending.clear();
+  ++u.flush_calls;
+  return ESP_OK;
+}
+
+esp_err_t uart_wait_tx_done(uart_port_t uart_num, TickType_t)
+{
+  ++fake_state::uart()[uart_num].wait_tx_done_calls;
   return ESP_OK;
 }
 

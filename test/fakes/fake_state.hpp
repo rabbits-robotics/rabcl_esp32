@@ -95,7 +95,10 @@ struct UartRecord
   int cts_pin = UART_PIN_NO_CHANGE;
   std::vector<uint8_t> written;    // uart_write_bytes で書かれたバイト列（累積）
   std::deque<uint8_t> rx_pending;  // uart_read_bytes が返すバイト列（テストが仕込む）
+  std::deque<uint8_t> rx_after_write;  // 次の uart_write_bytes のあとに rx_pending へ移るバイト列（半二重のエコー + 応答）
   TickType_t last_read_timeout_ticks = 0;
+  int flush_calls = 0;         // uart_flush_input の回数
+  int wait_tx_done_calls = 0;  // uart_wait_tx_done の回数
 };
 std::map<int, UartRecord> & uart();
 esp_err_t & uart_install_result();  // uart_driver_install の戻り値（既定 ESP_OK）

@@ -23,10 +23,12 @@ add_executable(rabcl_esp32_test
   ${RABCL_ESP32_DIR}/src/can_bus.cpp
   ${RABCL_ESP32_DIR}/src/debug_led.cpp
   ${RABCL_ESP32_DIR}/src/serial_port.cpp
+  ${RABCL_ESP32_DIR}/src/half_duplex_serial.cpp
   fakes/fake_state.cpp
   test_can_bus.cpp
   test_debug_led.cpp
   test_serial_port.cpp
+  test_half_duplex_serial.cpp
 )
 # fakes を先頭に置き、本物の ESP-IDF ヘッダの代わりに差し替える
 target_include_directories(rabcl_esp32_test PRIVATE

@@ -21,6 +21,7 @@ Rabbits Common Library for ESP32。ESP-IDF の周辺機器ドライバ（TWAI / 
 | `CanBus` | esp_driver_twai | TWAI コントローラ 1 つ。`Start()` / `Send()` / `Receive()` / `GetCounters()` / `GetStatus()`。`Send()` はフレームを内部のスロットにコピーしてドライバに積んだ時点で戻る（完了は待たない）。受信は ISR からキューに積む。バスオフは既定で FreeRTOS のタイマータスクから自動回復する |
 | `DebugLed` | esp_driver_gpio | LED 1 個。吸い込み / 吐き出しを設定で選ぶ |
 | `SerialPort` | esp_driver_uart | UART 1 ポート（8N1、フロー制御なし）。`Start()` / `Read(buf, len, timeout)` / `Write(buf, len)`。受信はドライバのリングバッファに溜まる。PC との通信（rabcl の `protocol/`）に使う |
+| `HalfDuplexSerial` | esp_driver_uart | 半二重バス（ST3215 などのバスサーボ）用。TX / RX が抵抗で 1 本の Data 線に合流する配線向けに、`Transfer(tx, tx_len, rx, rx_len, timeout_ms)` が「受信を捨てる → 送る → エコーを送信バイト数分読み捨てる → 応答を待つ」を 1 回で行う。rabcl には依存しない（`St3215Port` への適合は機体側） |
 
 共通の決まり:
 
