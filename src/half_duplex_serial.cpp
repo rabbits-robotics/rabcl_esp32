@@ -1,5 +1,7 @@
 #include "rabcl_esp32/half_duplex_serial.hpp"
 
+#include <cstring>
+
 #include <freertos/FreeRTOS.h>
 
 namespace rabcl_esp32
@@ -64,20 +66,25 @@ int HalfDuplexSerial::Transfer(
   if (!started_) {
     return -ESP_ERR_INVALID_STATE;
   }
-  const TickType_t timeout = pdMS_TO_TICKS(timeout_ms);
+  // tick（10 ms）境界の直前に読み始めても timeout_ms 以上待つよう 1 tick 足す
+  const TickType_t timeout = pdMS_TO_TICKS(timeout_ms) + 1;
   uart_flush_input(config_.port);  // 前回の残り（遅れて来た応答など）を捨てる
   const int written = uart_write_bytes(config_.port, tx, tx_len);
   if (written < 0 || static_cast<size_t>(written) != tx_len) {
     return -ESP_FAIL;
   }
   uart_wait_tx_done(config_.port, timeout);
-  // 合流回路のエコーを送信バイト数分読み捨てる
+  // 合流回路のエコーを送信バイト数分読み、送信と一致することを確かめる（長さだけだと、flush の後に
+  // 届いた前回の遅れた応答を食ってエコーの残りが応答に化ける。命令と応答のチェックサム式は同じ）
   uint8_t echo[64];
   size_t skipped = 0;
   while (skipped < tx_len) {
     const size_t chunk = tx_len - skipped < sizeof(echo) ? tx_len - skipped : sizeof(echo);
     const int n = uart_read_bytes(config_.port, echo, static_cast<uint32_t>(chunk), timeout);
     if (n <= 0) {
+      return -1;
+    }
+    if (std::memcmp(echo, tx + skipped, static_cast<size_t>(n)) != 0) {
       return -1;
     }
     skipped += static_cast<size_t>(n);

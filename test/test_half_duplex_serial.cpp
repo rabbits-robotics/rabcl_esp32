@@ -95,6 +95,19 @@ TEST_F(HalfDuplexSerialTest, TransferReturnsMinusOneWhenEchoMissing)
   EXPECT_EQ(-1, port.Transfer(ping_.data(), ping_.size(), rx, 6, 10));
 }
 
+// エコーは長さだけでなく中身も送信と一致しなければならない。前回の遅れた応答が flush の後に届くと、
+// 読み捨てがそれを食ってエコーの残りが応答に化ける（命令のチェックサム式は応答と同じなので通ってしまう）
+TEST_F(HalfDuplexSerialTest, TransferReturnsMinusOneWhenEchoDiffersFromTx)
+{
+  HalfDuplexSerial port(TestConfig());
+  ASSERT_EQ(ESP_OK, port.Start());
+  AfterWrite({0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC,   // 遅れて届いた前回の ACK
+      0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB,           // エコー
+      0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC});         // 本物の応答
+  uint8_t rx[8] = {};
+  EXPECT_EQ(-1, port.Transfer(ping_.data(), ping_.size(), rx, 6, 10));
+}
+
 TEST_F(HalfDuplexSerialTest, TransferReturnsShortReadOnTimeout)
 {
   HalfDuplexSerial port(TestConfig());
@@ -102,7 +115,17 @@ TEST_F(HalfDuplexSerialTest, TransferReturnsShortReadOnTimeout)
   AfterWrite({0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB, 0xFF, 0xFF, 0x01, 0x02});  // エコー + 応答 4 B だけ
   uint8_t rx[8] = {};
   EXPECT_EQ(4, port.Transfer(ping_.data(), ping_.size(), rx, 6, 10));
-  EXPECT_EQ(pdMS_TO_TICKS(10), Uart().last_read_timeout_ticks);
+}
+
+// tick 境界の直前に読み始めると pdMS_TO_TICKS(10) = 1 tick は 0 ms 近くで切れる。1 tick 足して最低 timeout_ms を保証する
+TEST_F(HalfDuplexSerialTest, TransferPadsReadTimeoutByOneTick)
+{
+  HalfDuplexSerial port(TestConfig());
+  ASSERT_EQ(ESP_OK, port.Start());
+  AfterWrite({0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB, 0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC});
+  uint8_t rx[8] = {};
+  port.Transfer(ping_.data(), ping_.size(), rx, 6, 10);
+  EXPECT_EQ(pdMS_TO_TICKS(10) + 1, Uart().last_read_timeout_ticks);
 }
 
 TEST_F(HalfDuplexSerialTest, TransferBeforeStartIsInvalidState)
